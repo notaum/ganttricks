@@ -1,6 +1,7 @@
 # Ganttricks
 
-The ONLY (that I could find) Multi-Project Timeline Visualizer!
+The only free Multi-Project Timeline Visualizer!
+(I searchead and couldnt find one)
 
 Like a gantt chart but with multiple tasks in each bar of the timeline view. 
 Useful for managing multiple projects or multiple milestones within a project.
@@ -61,6 +62,7 @@ DATES MUST BE IN DD/MM/YYYY otherwise the script will not work.
     --graph - Grid line frequency: daily, weekly, weekly-name, monthly (default)
 
     --clean - Hide x-axis labels for cleaner look
+
 
 
 
