@@ -58,13 +58,72 @@ def is_first_week_of_month(dt):
     # Check if our date is in that same week
     return get_week_start_date(dt) == first_week_monday
 
+def resolve_overlaps(df):
+    """
+    Resolve overlapping tasks within the same project by creating sub-groups.
+    Returns a modified DataFrame with a new 'SubGroup' column.
+    """
+    # Make a copy to avoid modifying the original
+    df_modified = df.copy()
+    
+    # Add subgroup column - will be filled for overlapping tasks
+    df_modified['SubGroup'] = 0
+    
+    # Process each project separately
+    for project in df_modified['Project'].unique():
+        project_tasks = df_modified[df_modified['Project'] == project].copy()
+        
+        if len(project_tasks) <= 1:
+            # No overlaps possible with only one task
+            continue
+            
+        # Sort tasks by start date
+        project_tasks = project_tasks.sort_values('Start')
+        
+        # Initialize subgroups
+        subgroups = [[]]  # List of subgroups, each subgroup is a list of task indices
+        
+        for idx, task in project_tasks.iterrows():
+            placed = False
+            
+            # Try to place in existing subgroups
+            for subgroup_idx, subgroup in enumerate(subgroups):
+                can_place = True
+                
+                # Check if this task overlaps with any task in the current subgroup
+                for existing_task_idx in subgroup:
+                    existing_task = project_tasks.loc[existing_task_idx]
+                    
+                    # Check for overlap: new task starts before existing task ends AND
+                    # new task ends after existing task starts
+                    if (task['Start'] < existing_task['Finish'] and 
+                        task['Finish'] > existing_task['Start']):
+                        can_place = False
+                        break
+                
+                if can_place:
+                    # Place task in this subgroup
+                    subgroup.append(idx)
+                    df_modified.at[idx, 'SubGroup'] = subgroup_idx
+                    placed = True
+                    break
+            
+            if not placed:
+                # Create new subgroup
+                subgroups.append([idx])
+                df_modified.at[idx, 'SubGroup'] = len(subgroups) - 1
+    
+    return df_modified
+
 def main():
     parser = argparse.ArgumentParser(
         description='Generate interactive Gantt charts from CSV data',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s projects.csv                    # Basic chart
+  %(prog)s projects.csv                    # Basic chart with automatic overlap handling
+  %(prog)s projects.csv --no-overlap       # Disable overlap handling (old behavior)
+  %(prog)s projects.csv --project-sort    # Colors by project with shading
   %(prog)s projects.csv --dark            # Dark theme
   %(prog)s projects.csv --name "Q4 Timeline" --graph weekly
   %(prog)s projects.csv --height 30 --opacity 80 --clean
@@ -91,6 +150,8 @@ CSV Format:
                            help='Bar opacity percentage (0-100, default: 100)')
     chart_group.add_argument('--rounding', type=int, default=5,
                            help='Bar corner radius in pixels (default: 5)')
+    chart_group.add_argument('--project-sort', action='store_true',
+                           help='Color by project (default: color by task)')
     
     # Layout group
     layout_group = parser.add_argument_group('layout options')
@@ -99,6 +160,10 @@ CSV Format:
                             help='Grid line frequency (default: monthly)')
     layout_group.add_argument('--clean', action='store_true', 
                             help='Hide x-axis labels for cleaner look')
+    
+    # Changed overlap handling argument - now default is ON, use --no-overlap to disable
+    layout_group.add_argument('--no-overlap', action='store_true',
+                            help='Disable automatic handling of overlapping tasks within projects')
     
     args = parser.parse_args()
     base_name = os.path.splitext(os.path.basename(args.input_file))[0]
@@ -174,44 +239,75 @@ CSV Format:
 
         df = pd.DataFrame(data)
 
-        # Prepare colors - FIXED: Create unique task identifiers
-        unique_projs = sorted(df['Project'].unique())
-        n_projs = len(unique_projs)
-        color_sets = px.colors.qualitative.Plotly
-        base_colors_list = (color_sets * ((n_projs // len(color_sets)) + 1))[:n_projs]
-        base_colors = dict(zip(unique_projs, base_colors_list))
-
-        # Create a unique identifier for each task by combining project and task
-        df['Task_Unique'] = df['Project'] + ' - ' + df['Task']
-
-        # Create color mapping for each unique task
-        color_discrete_map = {}
-        
-        # Group by project and sort tasks by start date within each project
-        for project in unique_projs:
-            project_tasks = df[df['Project'] == project].sort_values('Start')
-            tasks = project_tasks['Task_Unique'].tolist()
-            n_tasks = len(tasks)
+        # Handle overlapping tasks (now the DEFAULT behavior)
+        # FIXED: Changed args.nooverlap to args.no_overlap (with underscore)
+        if not args.no_overlap:  
+            print("Resolving overlapping tasks...")
+            df = resolve_overlaps(df)
             
-            base_color = base_colors[project]
-            
-            # Assign shades to tasks based on their order
-            for i, task_unique in enumerate(tasks):
-                # Calculate shade factor (0 for first task, 1 for last task)
-                shade_factor = i / max(n_tasks - 1, 1) if n_tasks > 1 else 0
-                color = create_shade(base_color, shade_factor)
-                color_discrete_map[task_unique] = color
+            # Create a new y-axis column that combines project and subgroup for non-overlapping display
+            df['DisplayProject'] = df['Project'] + df['SubGroup'].apply(lambda x: f" ({chr(65 + x)})" if x > 0 else "")
+        else:
+            # Keep original project name for display when --no-overlap is used
+            df['DisplayProject'] = df['Project']
 
-        # Sort for ordering
+        # Prepare colors based on the coloring mode
+        if args.project_sort:
+            # OLD BEHAVIOR: Color by project with shading for tasks within each project
+            unique_projs = sorted(df['Project'].unique())
+            n_projs = len(unique_projs)
+            color_sets = px.colors.qualitative.Plotly
+            base_colors_list = (color_sets * ((n_projs // len(color_sets)) + 1))[:n_projs]
+            base_colors = dict(zip(unique_projs, base_colors_list))
+
+            # Create a unique identifier for each task by combining project and task
+            df['Color_Group'] = df['Project'] + ' - ' + df['Task']
+
+            # Create color mapping for each unique task with shading within projects
+            color_discrete_map = {}
+            
+            # Group by project and sort tasks by start date within each project
+            for project in unique_projs:
+                project_tasks = df[df['Project'] == project].sort_values('Start')
+                tasks = project_tasks['Color_Group'].tolist()
+                n_tasks = len(tasks)
+                
+                base_color = base_colors[project]
+                
+                # Assign shades to tasks based on their order
+                for i, task_unique in enumerate(tasks):
+                    # Calculate shade factor (0 for first task, 1 for last task)
+                    shade_factor = i / max(n_tasks - 1, 1) if n_tasks > 1 else 0
+                    color = create_shade(base_color, shade_factor)
+                    color_discrete_map[task_unique] = color
+
+            # Use the project-task combination for coloring
+            color_column = 'Color_Group'
+            
+        else:
+            # NEW DEFAULT BEHAVIOR: Color by task (same task name = same color across projects)
+            unique_tasks = sorted(df['Task'].unique())
+            n_tasks = len(unique_tasks)
+            color_sets = px.colors.qualitative.Plotly
+            base_colors_list = (color_sets * ((n_tasks // len(color_sets)) + 1))[:n_tasks]
+            
+            # Create direct mapping from task name to color
+            color_discrete_map = dict(zip(unique_tasks, base_colors_list))
+            
+            # Use just the task name for coloring
+            color_column = 'Task'
+
+        # Sort for ordering - always sort by project and start date for consistent display
         df_sorted = df.sort_values(['Project', 'Start'])
 
-        # Create figure - use the unique task identifier for coloring
+        # Create figure - use the appropriate color column based on mode
+        # For overlap handling, use DisplayProject which includes subgroup indicators
         fig = px.timeline(
             df_sorted,
             x_start='Start',
             x_end='Finish',
-            y='Project',
-            color='Task_Unique',
+            y='DisplayProject',  # Use the display column that may include subgroup info
+            color=color_column,
             color_discrete_map=color_discrete_map
         )
 
@@ -225,7 +321,9 @@ CSV Format:
         plot_bgcolor = "#2d2d2d" if args.dark else "white"
 
         # Calculate height using percentage adjustment (like original code)
-        default_height = max(400, len(unique_projs) * 100)
+        # Adjust height based on number of unique display projects (which may include subgroups)
+        unique_display_projects = len(df['DisplayProject'].unique())
+        default_height = max(400, unique_display_projects * 100)
         height_multiplier = 1 + args.height / 100
         height = int(default_height * height_multiplier)
 
@@ -391,8 +489,9 @@ CSV Format:
                 gridwidth=0.5
             )
 
-        # Order y-axis
-        fig.update_yaxes(categoryorder='array', categoryarray=unique_projs)
+        # Order y-axis by display project (which maintains project grouping)
+        unique_display_projects = sorted(df['DisplayProject'].unique())
+        fig.update_yaxes(categoryorder='array', categoryarray=unique_display_projects)
 
         # Style traces - use the new opacity and rounding arguments
         fig.update_traces(
