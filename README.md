@@ -57,11 +57,16 @@ DATES MUST BE IN DD/MM/YYYY otherwise the script will not work.
 
     --rounding - Bar corner radius in pixels (default: 5)
 
+    --project-sort - Colour the items by project name instead of task name
+
+    --no-overlap - Forces everything on one row instead of creating multiple rows for overlapping items.
+
 ### Layout Options
 
     --graph - Grid line frequency: daily, weekly, weekly-name, monthly (default)
 
     --clean - Hide x-axis labels for cleaner look
+
 
 
 
